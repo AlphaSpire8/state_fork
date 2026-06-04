@@ -12,3 +12,6 @@ notebooks/
 *.slurm
 temp
 /wandb/
+
+# data
+*.h5ad
