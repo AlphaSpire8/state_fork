@@ -1,11 +1,11 @@
 name: PerturbationDataModule
 kwargs:
-  toml_config_path: null
-  embed_key: null
-  output_space: all
+  toml_config_path: /data1/fanpeishan/datasets/patient_data/cell_load/tomls/zeroshot.toml
+  embed_key: SE
+  output_space: gene
   pert_rep: onehot
   basal_rep: sample
-  num_workers: 12
+  num_workers: 0
   pin_memory: true
   n_basal_samples: 1
   downsample: null
@@ -13,10 +13,10 @@ kwargs:
   additional_obs: []
   basal_mapping_strategy: random
   should_yield_control_cells: true
-  batch_col: gem_group
-  pert_col: gene
+  batch_col: batch_id
+  pert_col: condition
   cell_type_key: cell_type
-  control_pert: DMSO_TF
+  control_pert: control
   map_controls: true # for a control cell, should we use it as the target (learn identity) or sample a control?
   perturbation_features_file: null
   store_raw_basal: false
@@ -24,5 +24,5 @@ kwargs:
   barcode: true
   use_consecutive_loading: false
   val_subsample_fraction: 1.0
-output_dir: null
+output_dir: /data1/fanpeishan/TheraShift/runs/run1
 debug: true
