@@ -19,7 +19,7 @@ true_adata_path: null
 
 # don't save hydra output
 hydra:
-  output_subdir: /data1/fanpeishan/TheraShift/runs/dydra
+  output_subdir: /data1/fanpeishan/TheraShift/runs/hydra
   run:
     dir: .
   job_logging:

@@ -3,7 +3,7 @@ checkpoint: null
 device: cuda
 
 kwargs:
-  cell_set_len: 512
+  cell_set_len: 64
   blur: 0.05
   hidden_dim: 768
   loss: energy

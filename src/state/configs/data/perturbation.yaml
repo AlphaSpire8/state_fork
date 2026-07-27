@@ -2,10 +2,10 @@ name: PerturbationDataModule
 kwargs:
   toml_config_path: /data1/fanpeishan/datasets/patient_data/cell_load/tomls/zeroshot.toml
   embed_key: SE
-  output_space: gene
+  output_space: all
   pert_rep: onehot
   basal_rep: sample
-  num_workers: 0
+  num_workers: 36
   pin_memory: true
   n_basal_samples: 1
   downsample: null

@@ -1,6 +1,6 @@
-wandb_track: true
+wandb_track: false
 weight_decay: 0.0005
-batch_size: 16
+batch_size: 32
 lr: 1e-4
 max_steps: 400000
 train_seed: 42
@@ -11,7 +11,7 @@ gradient_accumulation_steps: 1
 loss_fn: mse
 devices: 1  # Number of GPUs to use for training
 strategy: auto  # DDP strategy for multi-GPU training
-use_mfu: false
+use_mfu: true
 mfu_kwargs:
     available_flops: 60e12
     use_backward: true
