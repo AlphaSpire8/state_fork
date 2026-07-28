@@ -44,8 +44,8 @@ def create_dataloader(
     """创建推理用 DataLoader。
 
     调用者可传磁盘数据集及形状表，也可直接传内存中的 AnnData；两条路径最终都产生
-    相同的 collator 输入协议。推理阶段强制关闭 shuffle 和细胞增强，确保输出顺序与
-    输入 AnnData 一致并保持结果可复现。
+    相同的 collator 输入协议。推理阶段默认关闭 shuffle 和细胞增强；当传入 adata 时会
+    强制关闭 shuffle，确保输出顺序与输入 AnnData 一致并保持结果可复现。
     """
     if datasets is None and adata is None:
         raise ValueError("Either datasets and shape_dict or adata and adata_name should be provided")
