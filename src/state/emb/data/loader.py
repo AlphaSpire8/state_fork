@@ -1,21 +1,28 @@
-import h5py
-import logging
-import torch
-import torch.utils.data as data
-import torch.nn.functional as F
+"""State Embedding 的 H5AD 流式读取与“基因句子”构造逻辑。
+
+数据集层负责按细胞读取稀疏/稠密计数并对齐全局基因词表；collator 层再把不同基因数
+的细胞整理成定长 token 序列。把两层分开可避免预先展开大型 H5AD，也让训练增强只在
+组 batch 时发生。若要追踪一个样本，建议依次阅读 ``H5adSentenceDataset.__getitem__``、
+``FilteredGenesCounts`` 和 ``VCIDatasetSentenceCollator.__call__``。
+"""
+
 import functools
+import logging
+
+import h5py
 import numpy as np
-
-from typing import Dict, Optional
-
+import torch
+import torch.nn.functional as F
+from torch.utils import data
 from torch.utils.data import DataLoader
+
 from .. import utils
 
 log = logging.getLogger(__file__)
 
-# Threshold for flagging implausibly high UMIs when we undo a log1p
+# 反变换 log1p 时的安全上限：超过它通常意味着输入并非预期的归一化表达。
 EXPONENTIATED_UMIS_LIMIT = 5_000_000
-# If any count exceeds this, we confidently treat the tensor as raw integers
+# 单项计数超过该阈值时，可较有把握地认为输入是原始整数计数而非 log1p 数据。
 RAW_COUNT_HEURISTIC_THRESHOLD = 35
 
 
@@ -32,11 +39,13 @@ def create_dataloader(
     sentence_collator=None,
     protein_embeds=None,
     precision=None,
-    gene_column: Optional[str] = "gene_name",
+    gene_column: str | None = "gene_name",
 ):
-    """
-    Expected to be used for inference
-    Either datasets and shape_dict or adata and adata_name should be provided
+    """创建推理用 DataLoader。
+
+    调用者可传磁盘数据集及形状表，也可直接传内存中的 AnnData；两条路径最终都产生
+    相同的 collator 输入协议。推理阶段强制关闭 shuffle 和细胞增强，确保输出顺序与
+    输入 AnnData 一致并保持结果可复现。
     """
     if datasets is None and adata is None:
         raise ValueError("Either datasets and shape_dict or adata and adata_name should be provided")
@@ -80,8 +89,14 @@ def create_dataloader(
 
 
 class H5adSentenceDataset(data.Dataset):
+    """把多个 H5AD 文件拼成一个逻辑上的逐细胞数据集。
+
+    全局索引通过 ``_compute_index`` 映射到“数据集名 + 文件内行号”。文件句柄使用
+    LRU 缓存惰性打开，避免每取一个细胞都重新打开文件，同时也不必把表达矩阵整体
+    载入内存。
+    """
     def __init__(self, cfg, test=False, datasets=None, shape_dict=None, adata=None, adata_name=None) -> None:
-        super(H5adSentenceDataset, self).__init__()
+        super().__init__()
 
         self.adata = None
         self.adata_name = adata_name
@@ -121,6 +136,7 @@ class H5adSentenceDataset(data.Dataset):
         self.datasets_to_num = {k: v for k, v in zip(self.datasets, range(len(self.datasets)))}
 
     def _compute_index(self, idx):
+        """将拼接后的全局行号换算为具体数据集及其局部行号。"""
         for dataset in self.datasets:
             if idx < self.num_cells[dataset]:
                 return dataset, idx
@@ -130,6 +146,7 @@ class H5adSentenceDataset(data.Dataset):
 
     @functools.lru_cache
     def dataset_file(self, dataset):
+        """惰性打开并复用 H5 文件句柄；每个 worker 拥有自己的 Dataset 实例。"""
         datafile = self.dataset_path_map[dataset]
         return h5py.File(datafile, "r")
 
@@ -151,6 +168,7 @@ class H5adSentenceDataset(data.Dataset):
         attrs = dict(h5f["X"].attrs)
         try:
             if attrs["encoding-type"] == "csr_matrix":
+                # 只读取目标行覆盖的 data/indices 切片，避免将整个 CSR 矩阵物化。
                 indptrs = h5f["/X/indptr"]
                 start_ptr = indptrs[ds_idx]
                 end_ptr = indptrs[ds_idx + 1]
@@ -180,11 +198,17 @@ class H5adSentenceDataset(data.Dataset):
     def __len__(self) -> int:
         return self.total_num_cells
 
-    def get_dim(self) -> Dict[str, int]:
+    def get_dim(self) -> dict[str, int]:
         return self.num_genes
 
 
 class FilteredGenesCounts(H5adSentenceDataset):
+    """在基础计数数据集上增加“数据集基因 -> 全局嵌入词表”的对齐信息。
+
+    ``-1`` 表示某个本地基因没有可用嵌入，后续 collator 会过滤它。优先使用
+    ``var_names``；完全匹配失败时再退回指定的 ``gene_column``，以兼容 Ensembl ID
+    与基因符号使用不一致的数据集。
+    """
     def __init__(
         self,
         cfg,
@@ -194,9 +218,9 @@ class FilteredGenesCounts(H5adSentenceDataset):
         adata=None,
         adata_name=None,
         protein_embeds=None,
-        gene_column: Optional[str] = "gene_name",
+        gene_column: str | None = "gene_name",
     ) -> None:
-        super(FilteredGenesCounts, self).__init__(cfg, test, datasets, shape_dict, adata, adata_name)
+        super().__init__(cfg, test, datasets, shape_dict, adata, adata_name)
         self.valid_gene_index = {}
         self.protein_embeds = protein_embeds
         self.gene_column = gene_column
@@ -213,10 +237,10 @@ class FilteredGenesCounts(H5adSentenceDataset):
             self.datasets.append(adata_name)
             self.shapes_dict[adata_name] = adata.shape
 
-            # compute its embedding‐index vector
+            # 为当前 AnnData 构建等长映射向量，使本地列号可直接查到全局 token 编号。
             esm_data = self.protein_embeds or torch.load(emb_cfg["all_embeddings"], weights_only=False)
             valid_genes_list = list(esm_data.keys())
-            # make a gene→global‐index lookup
+            # 字典查询将逐基因匹配由线性扫描降为常数时间。
             global_pos = {g: i for i, g in enumerate(valid_genes_list)}
 
             # grab var_names from the AnnData
@@ -270,7 +294,7 @@ class FilteredGenesCounts(H5adSentenceDataset):
         return counts, idx, dataset, dataset_num
 
 
-class VCIDatasetSentenceCollator(object):
+class VCIDatasetSentenceCollator:
     def __init__(self, cfg, valid_gene_mask=None, ds_emb_mapping_inference=None, is_train=True, precision=None):
         self.pad_length = cfg.dataset.pad_length
         self.P = cfg.dataset.P

@@ -1,25 +1,33 @@
-import logging
-import math
+"""STATE 状态转移模型的核心实现。
 
-import anndata as ad
+本模块把一组对照细胞和一个扰动条件编码为 Transformer 的“细胞句子”，再预测
+扰动后细胞的整体分布。这里的序列维不是基因，而是同一实验条件下采样到的细胞；
+因此自注意力学习的是细胞集合内部的关系。阅读本文件时可以沿着
+``_build_networks -> forward -> training_step`` 这条主线理解模型。
+"""
+
+import logging
+
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-
 from geomloss import SamplesLoss
-from typing import Dict, Optional, Tuple
+from torch import nn
 
 from .base import PerturbationModel
 from .decoders import FinetuneVCICountsDecoder
-from .utils import build_mlp, get_activation_class, get_transformer_backbone, apply_lora
-
+from .utils import apply_lora, build_mlp, get_activation_class, get_transformer_backbone
 
 logger = logging.getLogger(__name__)
 
 
 class CombinedLoss(nn.Module):
-    """Combined Sinkhorn + Energy loss."""
+    """组合 Sinkhorn 距离与能量距离。
+
+    两项都比较预测细胞集合与真实细胞集合，而不是强制第 i 个预测细胞对应第 i 个
+    真实细胞。这正适合没有天然逐细胞配对关系的扰动实验。Sinkhorn 项强调最优传输
+    几何结构，能量距离则提供更稳定的分布匹配信号。
+    """
 
     def __init__(self, sinkhorn_weight=0.001, energy_weight=1.0, blur=0.05):
         super().__init__()
@@ -29,6 +37,7 @@ class CombinedLoss(nn.Module):
         self.energy_loss = SamplesLoss(loss="energy", blur=blur)
 
     def forward(self, pred, target):
+        # 先分别计算，便于权重表达“几何约束”和“统计分布约束”的相对重要性。
         sinkhorn_val = self.sinkhorn_loss(pred, target)
         energy_val = self.energy_loss(pred, target)
         return self.sinkhorn_weight * sinkhorn_val + self.energy_weight * energy_val
@@ -36,16 +45,19 @@ class CombinedLoss(nn.Module):
 
 class ConfidenceToken(nn.Module):
     """
-    Learnable confidence token that gets appended to the input sequence
-    and learns to predict the expected loss value.
+    附加在细胞序列末尾的可学习置信度 token。
+
+    它不负责生成细胞，而是汇总整组细胞的上下文，并预测该样本预期产生的损失。
+    推理方可据此识别模型把握较低的预测。其位置始终是序列最后一位，所以拆分输出时
+    不需要额外的 mask 或索引。
     """
 
     def __init__(self, hidden_dim: int, dropout: float = 0.1):
         super().__init__()
-        # Learnable confidence token embedding
+        # 参数只保存一份；每次前向传播再沿 batch 维展开，所有样本共享其初始语义。
         self.confidence_token = nn.Parameter(torch.randn(1, 1, hidden_dim))
 
-        # Projection head to map confidence token output to scalar loss prediction
+        # 将 Transformer 汇总后的 token 压缩为非负标量（损失理论上不应为负）。
         self.confidence_projection = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.LayerNorm(hidden_dim // 2),
@@ -75,7 +87,7 @@ class ConfidenceToken(nn.Module):
         # Concatenate along sequence dimension
         return torch.cat([seq_input, confidence_tokens], dim=1)
 
-    def extract_confidence_prediction(self, transformer_output: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def extract_confidence_prediction(self, transformer_output: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Extract main output and confidence prediction from transformer output.
 
@@ -98,11 +110,16 @@ class ConfidenceToken(nn.Module):
 
 class StateTransitionPerturbationModel(PerturbationModel):
     """
-    This model:
-      1) Projects basal expression and perturbation encodings into a shared latent space.
-      2) Uses an OT-based distributional loss (energy, sinkhorn, etc.) from geomloss.
-      3) Enables cells to attend to one another, learning a set-to-set function rather than
-      a sample-to-sample single-cell map.
+    STATE 的集合到集合（set-to-set）扰动预测模型。
+
+    处理流程：
+      1. 将基础表达和扰动编码投影到同一隐空间；
+      2. 让一组细胞通过 Transformer 彼此注意；
+      3. 解码扰动后的细胞集合；
+      4. 用能量距离、Sinkhorn 距离等分布损失监督。
+
+    关键点是模型并不学习一一配对的单细胞映射，而是学习条件分布的变化。这避免了
+    生物实验中对照细胞和扰动细胞无法天然配对的问题。
     """
 
     def __init__(
@@ -118,7 +135,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
         transformer_backbone_key: str = "GPT2",
         transformer_backbone_kwargs: dict = None,
         output_space: str = "gene",
-        gene_dim: Optional[int] = None,
+        gene_dim: int | None = None,
         **kwargs,
     ):
         """
@@ -144,7 +161,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
             **kwargs,
         )
 
-        # Save or store relevant hyperparams
+        # 以下字段共同决定“细胞句子”的长度、编码/解码深度及辅助损失强度。
         self.predict_residual = predict_residual
         self.output_space = output_space
         self.n_encoder_layers = kwargs.get("n_encoder_layers", 2)
@@ -164,7 +181,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
         self.mmd_num_chunks = max(int(kwargs.get("mmd_num_chunks", 1)), 1)
         self.randomize_mmd_chunks = bool(kwargs.get("randomize_mmd_chunks", False))
 
-        # Build the distributional loss from geomloss
+        # 分布损失是训练目标的核心：按配置选择单项距离或 Sinkhorn + Energy 组合。
         blur = kwargs.get("blur", 0.05)
         loss_name = kwargs.get("loss", "energy")
         if loss_name == "energy":
@@ -182,7 +199,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
 
         self.use_basal_projection = kwargs.get("use_basal_projection", True)
 
-        # Build the underlying neural OT network
+        # 到这里超参数已经齐备，可以构造投影层、Transformer 和输出头。
         self._build_networks(lora_cfg=kwargs.get("lora", None))
 
         # Add an optional encoder that introduces a batch variable
@@ -213,7 +230,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
                 pass
 
         self.batch_predictor_weight = float(kwargs.get("batch_predictor_weight", 0.1))
-        self.batch_predictor_num_classes: Optional[int] = batch_dim if self.batch_predictor else None
+        self.batch_predictor_num_classes: int | None = batch_dim if self.batch_predictor else None
         if self.batch_predictor:
             if self.batch_predictor_num_classes is None:
                 raise ValueError("batch_predictor=True requires a valid `batch_dim` (number of batch classes).")
@@ -232,7 +249,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
             self.batch_token = None
             self.batch_classifier = None
         # Internal cache for last token features (B, S, H) from transformer for aux loss
-        self._token_features: Optional[torch.Tensor] = None
+        self._token_features: torch.Tensor | None = None
 
         # if the model is outputting to counts space, apply relu
         # otherwise its in embedding space and we don't want to
@@ -260,7 +277,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
                 pass
 
         self.batch_token_weight = kwargs.get("batch_token_weight", 0.1)
-        self.batch_token_num_classes: Optional[int] = batch_dim if self.use_batch_token else None
+        self.batch_token_num_classes: int | None = batch_dim if self.use_batch_token else None
 
         if self.use_batch_token:
             if self.batch_token_num_classes is None:
@@ -279,7 +296,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
             self.batch_classifier = None
 
         # Internal cache for last token features (B, S, H) from transformer for aux loss
-        self._batch_token_cache: Optional[torch.Tensor] = None
+        self._batch_token_cache: torch.Tensor | None = None
 
         # initialize a confidence token
         self.confidence_token = None
@@ -540,7 +557,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
 
         return self.loss_fn(pred, target)
 
-    def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int, padded=True) -> torch.Tensor:
+    def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int, padded=True) -> torch.Tensor:
         """Training step logic for both main model and decoder."""
         batch = self._normalize_count_keys(batch)
         # Get model predictions (in latent space)
@@ -682,7 +699,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
 
         return total_loss
 
-    def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> None:
+    def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> None:
         """Validation step logic."""
         batch = self._normalize_count_keys(batch)
         if self.confidence_token is None:
@@ -738,7 +755,7 @@ class StateTransitionPerturbationModel(PerturbationModel):
 
         return {"loss": loss, "predictions": pred}
 
-    def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> None:
+    def test_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> None:
         batch = self._normalize_count_keys(batch)
         if self.confidence_token is None:
             pred, confidence_pred = self.forward(batch, padded=False), None

@@ -1,12 +1,17 @@
+"""扰动预测模型的公共 Lightning 基类与基因表达解码器。
+
+该层集中处理所有具体模型共享的职责：超参数保存、原始计数归一化、可选的基因空间
+解码、训练/验证/预测协议以及优化器配置。具体模型只需实现网络结构与前向传播。
+"""
+
 import logging
 import math
+import typing as tp
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
 
 import torch
-import torch.nn as nn
 from lightning.pytorch import LightningModule
-import typing as tp
+from torch import nn
 
 from .utils import get_loss_fn
 
@@ -15,12 +20,13 @@ logger = logging.getLogger(__name__)
 
 class LatentToGeneDecoder(nn.Module):
     """
-    A decoder module to transform latent embeddings back to gene expression space.
+    将细胞隐向量还原到基因表达空间的多层感知机。
 
     This takes concat([cell embedding]) as the input, and predicts
     counts over all genes as output.
 
-    This decoder is trained separately from the main perturbation model.
+    解码器可与主扰动模型分开训练；末尾 ReLU 保证预测计数非负。开启残差模式时，
+    每两个相邻 block 构成一组跳连，因此相加两端的维度必须兼容。
 
     Args:
         latent_dim: Dimension of latent space
@@ -34,7 +40,7 @@ class LatentToGeneDecoder(nn.Module):
         self,
         latent_dim: int,
         gene_dim: int,
-        hidden_dims: List[int] = [512, 1024],
+        hidden_dims: list[int] = [512, 1024],
         dropout: float = 0.1,
         residual_decoder=False,
     ):
@@ -43,7 +49,7 @@ class LatentToGeneDecoder(nn.Module):
         self.residual_decoder = residual_decoder
 
         if residual_decoder:
-            # Build individual blocks for residual connections
+            # 保留独立 block，前向传播时才能显式插入跨 block 的残差连接。
             self.blocks = nn.ModuleList()
             input_dim = latent_dim
 
@@ -57,7 +63,7 @@ class LatentToGeneDecoder(nn.Module):
             # Final output layer
             self.final_layer = nn.Sequential(nn.Linear(input_dim, gene_dim), nn.ReLU())
         else:
-            # Original implementation without residual connections
+            # 非残差路径可直接展平为 Sequential，结构更简单、执行开销也更小。
             layers = []
             input_dim = latent_dim
 
@@ -119,7 +125,11 @@ class LatentToGeneDecoder(nn.Module):
 
 class PerturbationModel(ABC, LightningModule):
     """
-    Base class for perturbation models that can operate on either raw counts or embeddings.
+    可同时服务于原始计数和预计算嵌入的扰动模型抽象基类。
+
+    ``output_space`` 是理解数据流的关键：``embedding`` 直接输出隐表示；``gene``
+    输出选定基因空间；``all`` 则面向完整基因计数。子类应实现 ``_build_networks``，
+    并遵守 batch 字典中的约定键，以复用本类的训练和推理生命周期。
 
     Args:
         input_dim: Dimension of input features (genes or embeddings)
@@ -143,9 +153,9 @@ class PerturbationModel(ABC, LightningModule):
         lr: float = 3e-4,
         loss_fn: nn.Module = nn.MSELoss(),
         control_pert: str = "non-targeting",
-        embed_key: Optional[str] = None,
+        embed_key: str | None = None,
         output_space: str = "gene",
-        gene_names: Optional[List[str]] = None,
+        gene_names: list[str] | None = None,
         batch_size: int = 64,
         gene_dim: int = 5000,
         hvg_dim: int = 2001,
@@ -157,7 +167,7 @@ class PerturbationModel(ABC, LightningModule):
         self.save_hyperparameters()
         self.gene_decoder_bool = kwargs.get("gene_decoder_bool", True)
 
-        # Core architecture settings
+        # 架构维度在基类统一保存，防止不同子模型对输入、扰动和输出维度理解不一致。
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
@@ -187,7 +197,7 @@ class PerturbationModel(ABC, LightningModule):
         if self.log1p_from_raw_counts and (not math.isfinite(self.counts_target_sum) or self.counts_target_sum <= 0):
             raise ValueError("counts_target_sum must be positive and finite")
 
-        # Training settings
+        # 训练相关配置由 Lightning checkpoint 一并持久化，恢复时可重建相同数据语义。
         self.gene_names = gene_names  # store the gene names that this model output for gene expression space
         self.dropout = dropout
         self.lr = lr
@@ -207,10 +217,15 @@ class PerturbationModel(ABC, LightningModule):
         self._build_decoder()
 
     def transfer_batch_to_device(self, batch, device, dataloader_idx: int):
+        """只搬运张量值，保留字符串、样本标识等元数据在 CPU 上。"""
         return {k: (v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
 
     def _cp_log1p(self, value: torch.Tensor) -> torch.Tensor:
-        """Normalize each count vector to ``counts_target_sum`` and apply log1p."""
+        """逐细胞执行 CP 归一化后取 ``log1p``。
+
+        每行先缩放到相同的总计数 ``counts_target_sum``，消除测序深度差异。全零细胞的
+        缩放系数显式设为零，既保持其生物学含义，也避免除零产生 NaN。
+        """
         counts = value.float().clamp_min(0)
         totals = counts.sum(dim=-1, keepdim=True)
         scale = torch.where(
@@ -220,8 +235,12 @@ class PerturbationModel(ABC, LightningModule):
         )
         return torch.log1p(counts * scale)
 
-    def _normalize_count_keys(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        """Return count-space batch tensors in log1p(CP(target_sum)) space."""
+    def _normalize_count_keys(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """复制 batch，并把其中属于计数空间的张量转换到 log1p(CP) 空间。
+
+        不原地修改输入，避免同一个 batch 被辅助损失或回调再次读取时看到意外数据。
+        当输入本身是外部嵌入时，只转换真实扰动计数，不触碰嵌入张量。
+        """
         if not self.log1p_from_raw_counts:
             return batch
 
@@ -239,7 +258,6 @@ class PerturbationModel(ABC, LightningModule):
     @abstractmethod
     def _build_networks(self):
         """Build the core neural network components."""
-        pass
 
     def _build_decoder(self):
         """Create self.gene_decoder from self.decoder_cfg (or leave None)."""
@@ -327,7 +345,7 @@ class PerturbationModel(ABC, LightningModule):
         else:
             logger.info("Decoder was already configured externally, skipping checkpoint decoder configuration")
 
-    def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
+    def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         """Training step logic for both main model and decoder."""
         batch = self._normalize_count_keys(batch)
         # Get model predictions (in latent space)
@@ -357,7 +375,7 @@ class PerturbationModel(ABC, LightningModule):
 
         return total_loss
 
-    def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> None:
+    def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> None:
         """Validation step logic."""
         batch = self._normalize_count_keys(batch)
         pred = self(batch)
@@ -369,7 +387,7 @@ class PerturbationModel(ABC, LightningModule):
 
         return {"loss": loss, "predictions": pred}
 
-    def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> None:
+    def test_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> None:
         batch = self._normalize_count_keys(batch)
         latent_output = self(batch)
         target = batch[self.embed_key]
