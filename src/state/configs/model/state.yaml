@@ -1,6 +1,6 @@
 name: state
-checkpoint: null
-device: cuda
+# checkpoint: null
+# device: cuda
 
 kwargs:
   cell_set_len: 64
@@ -13,7 +13,7 @@ kwargs:
   predict_residual: True
   softplus: True
   freeze_pert_backbone: False
-  transformer_decoder: False
+#   transformer_decoder: False
   finetune_vci_decoder: False
   residual_decoder: False
   batch_encoder: False
@@ -24,12 +24,12 @@ kwargs:
   log1p_from_raw_counts: False
   counts_target_sum: 10000
 
-  use_effect_gating_token: False
+#   use_effect_gating_token: False
   distributional_loss: energy
   init_from: null
   mmd_num_chunks: 1
   randomize_mmd_chunks: false
-  llm_name: null
+#   llm_name: null
 
   transformer_backbone_key: llama
   transformer_backbone_kwargs:

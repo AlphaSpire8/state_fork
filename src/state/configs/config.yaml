@@ -13,9 +13,9 @@ name: run1
 output_dir: /data1/fanpeishan/TheraShift/runs
 use_wandb: false
 overwrite: false
-return_adatas: false
-pred_adata_path: null
-true_adata_path: null
+# return_adatas: false
+# pred_adata_path: null
+# true_adata_path: null
 
 # don't save hydra output
 hydra:

@@ -1,6 +1,6 @@
 name: PerturbationDataModule
 kwargs:
-  toml_config_path: /data1/fanpeishan/datasets/patient_data/cell_load/tomls/zeroshot.toml
+  toml_config_path: null
   embed_key: SE
   output_space: all
   pert_rep: onehot
@@ -16,7 +16,7 @@ kwargs:
   batch_col: batch_id
   pert_col: condition
   cell_type_key: cell_type
-  control_pert: control
+  control_pert: "[('DMSO_TF', 0.0, 'uM')]"
   map_controls: true # for a control cell, should we use it as the target (learn identity) or sample a control?
   perturbation_features_file: null
   store_raw_basal: false
@@ -24,5 +24,5 @@ kwargs:
   barcode: true
   use_consecutive_loading: false
   val_subsample_fraction: 1.0
-output_dir: /data1/fanpeishan/TheraShift/runs/run1
-debug: true
+# output_dir: null
+# debug: true
