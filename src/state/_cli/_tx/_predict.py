@@ -109,7 +109,7 @@ def run_tx_predict(args: ap.ArgumentParser):
     import lightning.pytorch as pl
     import numpy as np
     import pandas as pd
-    from scipy import sparse as sp
+    # from scipy import sparse as sp
     import torch
     import yaml
 
@@ -174,16 +174,16 @@ def run_tx_predict(args: ap.ArgumentParser):
             cfg = yaml.safe_load(f)
         return cfg
 
-    def clip_anndata_values(adata: anndata.AnnData, max_value: float, min_value: float = 0.0) -> None:
-        """Clip adata.X values in-place to keep cell-eval scale checks happy."""
-        if sp.issparse(adata.X):
-            # Clip only the stored data to keep sparsity intact.
-            if adata.X.data.size:
-                np.clip(adata.X.data, min_value, max_value, out=adata.X.data)
-                if hasattr(adata.X, "eliminate_zeros"):
-                    adata.X.eliminate_zeros()
-        else:
-            np.clip(adata.X, min_value, max_value, out=adata.X)
+    # def clip_anndata_values(adata: anndata.AnnData, max_value: float, min_value: float = 0.0) -> None:
+    #     """Clip adata.X values in-place to keep cell-eval scale checks happy."""
+    #     if sp.issparse(adata.X):
+    #         # Clip only the stored data to keep sparsity intact.
+    #         if adata.X.data.size:
+    #             np.clip(adata.X.data, min_value, max_value, out=adata.X.data)
+    #             if hasattr(adata.X, "eliminate_zeros"):
+    #                 adata.X.eliminate_zeros()
+    #     else:
+    #         np.clip(adata.X, min_value, max_value, out=adata.X)
 
     def get_batch_labels(candidates, batch_size: int):
         batch_labels = None
@@ -546,9 +546,9 @@ def run_tx_predict(args: ap.ArgumentParser):
             adata_pred = anndata.AnnData(X=pred_bulk, obs=obs)
             adata_real = anndata.AnnData(X=real_bulk, obs=obs)
 
-        clip_anndata_values(adata_pred, max_value=14.0)
-        clip_anndata_values(adata_real, max_value=14.0)
-        logger.info("Clipped pseudobulk adata_pred and adata_real X values to [0.0, 14.0].")
+        # clip_anndata_values(adata_pred, max_value=14.0)
+        # clip_anndata_values(adata_real, max_value=14.0)
+        # logger.info("Clipped pseudobulk adata_pred and adata_real X values to [0.0, 14.0].")
 
         if args.shared_only:
             try:
@@ -676,10 +676,14 @@ def run_tx_predict(args: ap.ArgumentParser):
                 shared_perts = None
 
         pred_writer = StreamingDenseH5ad(
-            adata_pred_path, num_cells, x_dim, obsm=obsm_spec, clip=(0.0, 14.0)
+            adata_pred_path, num_cells, x_dim, obsm=obsm_spec,
+            # clip=(0.0, 14.0)
+            clip=None
         )
         real_writer = StreamingDenseH5ad(
-            adata_real_path, num_cells, x_dim, obsm=obsm_spec, clip=(0.0, 14.0)
+            adata_real_path, num_cells, x_dim, obsm=obsm_spec,
+            # clip=(0.0, 14.0)
+            clip=None
         )
 
         all_pert_names: list[str] = []
@@ -913,9 +917,9 @@ def run_tx_predict(args: ap.ArgumentParser):
         adata_real = anndata.AnnData(X=final_reals, obs=obs)
 
     # Clip extreme values to keep cell-eval log1p checks happy.
-    clip_anndata_values(adata_pred, max_value=14.0)
-    clip_anndata_values(adata_real, max_value=14.0)
-    logger.info("Clipped adata_pred and adata_real X values to [0.0, 14.0] before evaluation.")
+    # clip_anndata_values(adata_pred, max_value=14.0)
+    # clip_anndata_values(adata_real, max_value=14.0)
+    # logger.info("Clipped adata_pred and adata_real X values to [0.0, 14.0] before evaluation.")
 
     # Optionally filter to perturbations seen in at least one training context
     if args.shared_only:

@@ -144,11 +144,11 @@ def run_tx_infer(args: argparse.Namespace):
             pass
         return np.asarray(mat)
 
-    def clip_array(arr, min_value: float = 0.0, max_value: float = 14.0) -> None:
-        """Clip array values in-place for stability in gene-space outputs."""
-        if arr is None:
-            return
-        np.clip(arr, min_value, max_value, out=arr)
+    # def clip_array(arr, min_value: float = 0.0, max_value: float = 14.0) -> None:
+    #     """Clip array values in-place for stability in gene-space outputs."""
+    #     if arr is None:
+    #         return
+    #     np.clip(arr, min_value, max_value, out=arr)
 
     def pick_first_present(d: "sc.AnnData", candidates: List[str]) -> Optional[str]:
         for c in candidates:
@@ -917,23 +917,23 @@ def run_tx_infer(args: argparse.Namespace):
                     start = end  # next window
 
     # Clip gene-space predictions to keep downstream eval consistent.
-    if output_space in {"gene", "all"}:
-        if out_target == "X":
-            clip_array(sim_X)
-        elif out_target.startswith("obsm['") and out_target.endswith("']"):
-            pred_key = out_target[6:-2]
-            if writes_to[0] == ".obsm" and pred_key == writes_to[1]:
-                clip_array(sim_obsm)
-            elif pred_key in adata.obsm:
-                clip_array(adata.obsm[pred_key])
-        else:
-            if writes_to[0] == ".X":
-                clip_array(sim_X)
-            else:
-                clip_array(sim_obsm)
+    # if output_space in {"gene", "all"}:
+    #     if out_target == "X":
+    #         clip_array(sim_X)
+    #     elif out_target.startswith("obsm['") and out_target.endswith("']"):
+    #         pred_key = out_target[6:-2]
+    #         if writes_to[0] == ".obsm" and pred_key == writes_to[1]:
+    #             clip_array(sim_obsm)
+    #         elif pred_key in adata.obsm:
+    #             clip_array(adata.obsm[pred_key])
+    #     else:
+    #         if writes_to[0] == ".X":
+    #             clip_array(sim_X)
+    #         else:
+    #             clip_array(sim_obsm)
 
-        if counts_written and sim_counts is not None:
-            clip_array(sim_counts)
+    #     if counts_written and sim_counts is not None:
+    #         clip_array(sim_counts)
 
     # -----------------------
     # 5) Persist the updated AnnData
