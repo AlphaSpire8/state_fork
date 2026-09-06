@@ -30,6 +30,7 @@ dependencies = [
     "cell-eval>=0.8.1",
     "ipykernel>=6.30.1",
     "scipy>=1.15.0",
+    "tabulate>=0.10.0",
 ]
 
 [project.optional-dependencies]
