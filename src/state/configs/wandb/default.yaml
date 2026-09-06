@@ -1,6 +1,6 @@
 # Generic wandb configuration
 # Users should customize these values for their own use
-entity: BUPT_212
+entity: alphasteven-beijing-university-of-posts-and-telecommunic
 project: TheraShift
 local_wandb_dir: /data1/fanpeishan/TheraShift/runs/wandb_logs
 tags: [] 
