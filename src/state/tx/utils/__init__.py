@@ -105,7 +105,7 @@ def get_loggers(
                 name=name,
                 project=wandb_project,
                 entity=wandb_entity,
-                dir=local_wandb_dir,
+                save_dir=local_wandb_dir,
                 tags=cfg["wandb"].get("tags", []) if cfg else [],
             )
             if cfg is not None:
