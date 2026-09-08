@@ -7,24 +7,24 @@ kwargs:
   blur: 0.05
   hidden_dim: 768
   loss: energy
-  confidence_token: False
+  confidence_token: false
   n_encoder_layers: 1
   n_decoder_layers: 1
-  predict_residual: True
-  softplus: True
-  freeze_pert_backbone: False
-#   transformer_decoder: False
-  finetune_vci_decoder: False
-  residual_decoder: False
-  batch_encoder: False
-  use_batch_token: False
-  mask_attn: False
+  predict_residual: true
+  softplus: true
+  freeze_pert_backbone: false
+#   transformer_decoder: false
+  finetune_vci_decoder: false
+  residual_decoder: false
+  batch_encoder: false
+  use_batch_token: false
+  mask_attn: false
 
   # Convert raw counts to log1p(CP(counts_target_sum)) inside the model.
-  log1p_from_raw_counts: False
+  log1p_from_raw_counts: false
   counts_target_sum: 10000
 
-#   use_effect_gating_token: False
+#   use_effect_gating_token: false
   distributional_loss: energy
   init_from: null
   mmd_num_chunks: 1

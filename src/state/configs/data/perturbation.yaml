@@ -1,5 +1,6 @@
 name: PerturbationDataModule
 kwargs:
+  is_log1p: true
   toml_config_path: null
   embed_key: SE
   output_space: all
